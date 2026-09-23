@@ -150,10 +150,7 @@ class Matcher:
                 continue
             top = candidates[0]
             margin = top.score - (candidates[1].score if len(candidates) > 1 else 0.0)
-            if top.score < 0.60:
-                results.append(self._no_match(entity_type, before))
-                continue
-            if len(candidates) == 1 or margin >= 0.12 or candidates[1].score < 0.55:
+            if top.score >= 0.83 and margin >= 0.12:
                 used_after.add(top.entity.id)
                 results.append(
                     self._make_match(
@@ -220,13 +217,15 @@ class Matcher:
             valid_sources = set(match.before_clause_ids).issubset(
                 allowed_before_clauses
             )
-            if match.after_id is not None:
+            if match.after_id is not None and valid_after:
                 valid_sources = valid_sources and set(match.after_clause_ids).issubset(
                     set(allowed_after[match.after_id].source_clause_ids)
                 )
                 valid_sources = valid_sources and bool(
                     match.before_clause_ids and match.after_clause_ids
                 )
+            elif match.after_id is not None:
+                valid_sources = False
             if match.before_id == before.id and valid_after and valid_sources:
                 return match
 

@@ -19,7 +19,6 @@ from app.ai.schemas import (
     RiskAnalysisResponse,
     RiskType,
 )
-from app.errors import AppError
 from app.models.ai import (
     Deviation,
     EntityCatalog,
@@ -30,17 +29,12 @@ from app.models.ai import (
     OrgUnit,
     Role,
 )
-from app.models.domain import (
-    ChangeType,
-    Clause,
-    ParsedDocument,
-    SemanticRelation,
-    Severity,
-)
+from app.models.domain import ChangeType, ParsedDocument, SemanticRelation, Severity
 
 Entity = Union[OrgUnit, Role, Function]
 CLASSIFICATION_BATCH_SIZE = 20
-EVIDENCE_BATCH_SIZE = 1
+EVIDENCE_BATCH_SIZE = 25
+MAX_RISK_CANDIDATES = 24
 
 
 class RiskAnalyzer:
@@ -60,17 +54,14 @@ class RiskAnalyzer:
         before_entities = self._entity_index(before_catalog)
         after_entities = self._entity_index(after_catalog)
         deviations: list[Deviation] = []
-        ai_candidates: list[tuple[float, dict[str, object]]] = []
+        ai_inputs: list[dict[str, object]] = []
         matched_after = {match.after_id for match in matches if match.after_id}
 
         for match in matches:
             before = before_entities[match.before_id]
             after = after_entities.get(match.after_id or "")
             if match.entity_type == EntityType.UNIT:
-                if after is not None and (
-                    match.relation == MatchRelation.EQUIVALENT
-                    or self._units_equivalent(before, after)
-                ):
+                if after is not None and match.relation == MatchRelation.EQUIVALENT:
                     deviations.append(
                         self._draft(
                             before.document_id,
@@ -90,12 +81,9 @@ class RiskAnalyzer:
                 elif after is None:
                     deviations.append(self._insufficient_for_unmatched(before, match))
                 else:
-                    ai_candidates.append(
-                        (
-                            100.0 + match.score,
-                            self._classification_input(
-                                match, before, after, before_document, after_document
-                            ),
+                    ai_inputs.append(
+                        self._classification_input(
+                            match, before, after, before_document, after_document
                         )
                     )
                 continue
@@ -124,16 +112,9 @@ class RiskAnalyzer:
                             )
                         )
                 else:
-                    same_number = bool(
-                        self._numbers(before, before_document)
-                        & self._numbers(after, after_document)
-                    )
-                    ai_candidates.append(
-                        (
-                            (80.0 if same_number else 60.0) + match.score,
-                            self._classification_input(
-                                match, before, after, before_document, after_document
-                            ),
+                    ai_inputs.append(
+                        self._classification_input(
+                            match, before, after, before_document, after_document
                         )
                     )
                 continue
@@ -145,51 +126,21 @@ class RiskAnalyzer:
             if after.id in matched_after:
                 continue
             draft_id = self._draft_id(after.document_id, "added:" + after.id)
-            if isinstance(after, OrgUnit):
-                deviations.append(
-                    Deviation(
-                        id=draft_id,
-                        change_type=ChangeType.UNIT_CREATED,
-                        semantic_relation=SemanticRelation.NOT_APPLICABLE,
-                        subject_refs=[after.id],
-                        before_clause_ids=[],
-                        after_clause_ids=after.source_clause_ids,
-                        description=self._description(
-                            ChangeType.UNIT_CREATED, after.name
-                        ),
-                        severity=Severity.MEDIUM,
-                        confidence=after.extraction_confidence,
-                        rationale=(
-                            "Подразделение извлечено из новой редакции и не имеет "
-                            "сопоставленного подразделения в прежней редакции."
-                        ),
-                        manual_review_required=False,
-                    )
-                )
-                continue
-            ai_candidates.append(
-                (
-                    20.0 + after.extraction_confidence,
-                    {
-                        "draft_id": draft_id,
-                        "match_id": None,
-                        "kind": "unmatched_after",
-                        "before": None,
-                        "after": self._entity_payload(after, after_document),
-                        "allowed_change_types": [
-                            ChangeType.FUNCTION_ADDED.value,
-                            ChangeType.INSUFFICIENT_EVIDENCE.value,
-                        ],
-                    },
-                )
+            ai_inputs.append(
+                {
+                    "draft_id": draft_id,
+                    "match_id": None,
+                    "kind": "unmatched_after",
+                    "before": None,
+                    "after": self._entity_payload(after, after_document),
+                    "allowed_change_types": [
+                        ChangeType.UNIT_CREATED.value
+                        if isinstance(after, OrgUnit)
+                        else ChangeType.FUNCTION_ADDED.value,
+                        ChangeType.INSUFFICIENT_EVIDENCE.value,
+                    ],
+                }
             )
-
-        ai_inputs = [
-            payload
-            for _, payload in sorted(
-                ai_candidates, key=lambda item: item[0], reverse=True
-            )
-        ]
 
         deviations.extend(
             self._classify_with_ai(
@@ -200,93 +151,6 @@ class RiskAnalyzer:
             )
         )
         return self._deduplicate(deviations)
-
-    def classify_clause_fallbacks(
-        self,
-        before: ParsedDocument,
-        after: ParsedDocument,
-    ) -> list[Deviation]:
-        """Classify strong same-number text pairs omitted by entity extraction."""
-
-        before_by_number = {
-            clause.number: clause for clause in before.clauses if clause.number
-        }
-        after_by_number = {
-            clause.number: clause for clause in after.clauses if clause.number
-        }
-        candidates: list[tuple[float, Clause, Clause]] = []
-        for number in before_by_number.keys() & after_by_number.keys():
-            old = before_by_number[number]
-            new = after_by_number[number]
-            if old.normalized_text == new.normalized_text:
-                continue
-            similarity = ratio(old.normalized_text, new.normalized_text) / 100.0
-            if similarity >= 0.88:
-                candidates.append((similarity, old, new))
-
-        modal_markers = {"может", "обязан", "должен", "вправе", "осуществляется"}
-        deviations: list[Deviation] = []
-        for similarity, old, new in sorted(
-            candidates, key=lambda item: item[0], reverse=True
-        ):
-            changed_tokens = set(old.normalized_text.split()) ^ set(
-                new.normalized_text.split()
-            )
-            subject = f"пункт {old.number}"
-            if changed_tokens & modal_markers:
-                for change_type, description in (
-                    (
-                        ChangeType.FUNCTION_MISSING,
-                        "Часть прежней обязательности не найдена",
-                    ),
-                    (
-                        ChangeType.FUNCTION_ADDED,
-                        "Добавлена новая модальная формулировка",
-                    ),
-                ):
-                    deviations.append(
-                        Deviation(
-                            id=self._draft_id(
-                                before.document.id,
-                                f"modal:{change_type.value}:{old.id}:{new.id}",
-                            ),
-                            change_type=change_type,
-                            semantic_relation=SemanticRelation.NARROWER,
-                            subject_refs=[f"clause:{old.number}"],
-                            before_clause_ids=[old.id],
-                            after_clause_ids=[new.id],
-                            description=f"{description}: {subject}",
-                            severity=Severity.MEDIUM,
-                            confidence=similarity,
-                            rationale=(
-                                "В сопоставленном пункте изменено модальное слово; "
-                                "вывод относится только к обязательности действия."
-                            ),
-                            manual_review_required=True,
-                        )
-                    )
-            else:
-                deviations.append(
-                    Deviation(
-                        id=self._draft_id(
-                            before.document.id, f"wording:{old.id}:{new.id}"
-                        ),
-                        change_type=ChangeType.WORDING_CHANGED,
-                        semantic_relation=SemanticRelation.EQUIVALENT,
-                        subject_refs=[f"clause:{old.number}"],
-                        before_clause_ids=[old.id],
-                        after_clause_ids=[new.id],
-                        description=f"Формулировка изменена: {subject}",
-                        severity=Severity.INFO,
-                        confidence=similarity,
-                        rationale=(
-                            "Пункты имеют одинаковый номер и высокое текстовое "
-                            "сходство без изменения модальных маркеров."
-                        ),
-                        manual_review_required=False,
-                    )
-                )
-        return deviations
 
     def analyze_risks(
         self,
@@ -307,7 +171,7 @@ class RiskAnalyzer:
             scored_pairs.append((similarity, first, second, hierarchical))
         for similarity, first, second, hierarchical in sorted(
             scored_pairs, key=lambda item: item[0], reverse=True
-        ):
+        )[:MAX_RISK_CANDIDATES]:
             if hierarchical:
                 continue
             candidates.append(
@@ -420,8 +284,7 @@ class RiskAnalyzer:
         before: ParsedDocument,
         after: ParsedDocument,
     ) -> dict[str, EvidenceDecision]:
-        before_ids = {clause.id for clause in before.clauses}
-        after_ids = {clause.id for clause in after.clauses}
+        allowed_ids = {clause.id for clause in [*before.clauses, *after.clauses]}
         decisions: dict[str, EvidenceDecision] = {}
         for batch in self._batches(deviations, EVIDENCE_BATCH_SIZE):
             payload = {
@@ -432,84 +295,27 @@ class RiskAnalyzer:
                 evidence_prompt(payload), EvidenceCheckResponse
             )
             batch_ids = {item.id for item in batch}
-            referenced_by_draft = {
-                item.id: {*item.before_clause_ids, *item.after_clause_ids}
-                for item in batch
-            }
             for decision in response.decisions:
                 if decision.draft_id not in batch_ids:
                     continue
-                referenced_ids = referenced_by_draft[decision.draft_id]
-                if not set(decision.supporting_clause_ids).issubset(referenced_ids):
+                if not set(decision.supporting_clause_ids).issubset(allowed_ids):
                     continue
-                if not set(decision.contradicting_clause_ids).issubset(referenced_ids):
+                if not set(decision.contradicting_clause_ids).issubset(allowed_ids):
                     continue
                 decisions[decision.draft_id] = decision
         for deviation in deviations:
             if deviation.id not in decisions:
-                decisions[deviation.id] = self._fallback_evidence_decision(
-                    deviation,
-                    before_ids,
-                    after_ids,
+                decisions[deviation.id] = EvidenceDecision(
+                    draft_id=deviation.id,
+                    verdict=EvidenceVerdict.INSUFFICIENT,
+                    supporting_clause_ids=[
+                        *deviation.before_clause_ids,
+                        *deviation.after_clause_ids,
+                    ],
+                    contradicting_clause_ids=[],
+                    reason="AI-5 не вернул проверяемое решение для черновика.",
                 )
         return decisions
-
-    @staticmethod
-    def _fallback_evidence_decision(
-        deviation: Deviation,
-        before_ids: set[str],
-        after_ids: set[str],
-    ) -> EvidenceDecision:
-        before_valid = bool(deviation.before_clause_ids) and set(
-            deviation.before_clause_ids
-        ).issubset(before_ids)
-        after_valid = bool(deviation.after_clause_ids) and set(
-            deviation.after_clause_ids
-        ).issubset(after_ids)
-        two_sided = {
-            ChangeType.UNIT_PRESERVED,
-            ChangeType.UNIT_TRANSFORMED,
-            ChangeType.FUNCTION_PRESERVED,
-            ChangeType.FUNCTION_MOVED,
-            ChangeType.WORDING_CHANGED,
-        }
-        supported = False
-        if deviation.change_type in two_sided:
-            supported = before_valid and after_valid
-        elif deviation.change_type in {
-            ChangeType.UNIT_CREATED,
-            ChangeType.FUNCTION_ADDED,
-        }:
-            supported = after_valid
-        elif deviation.change_type == ChangeType.FUNCTION_MISSING:
-            supported = before_valid and after_valid
-        elif deviation.change_type == ChangeType.POSSIBLE_DUPLICATE:
-            supported = (
-                after_valid
-                and len(set(deviation.after_clause_ids)) >= 2
-                and len(set(deviation.subject_refs)) >= 2
-            )
-        elif deviation.change_type == ChangeType.POSSIBLE_CONFLICT:
-            supported = after_valid and deviation.manual_review_required
-
-        return EvidenceDecision(
-            draft_id=deviation.id,
-            verdict=(
-                EvidenceVerdict.SUPPORTED if supported else EvidenceVerdict.INSUFFICIENT
-            ),
-            supporting_clause_ids=(
-                [*deviation.before_clause_ids, *deviation.after_clause_ids]
-                if supported
-                else []
-            ),
-            contradicting_clause_ids=[],
-            reason=(
-                "AI-5 не вернул решение; обязательные источники подтверждены "
-                "детерминированной проверкой идентификаторов."
-                if supported
-                else "Недостаточно обязательных источников для типа изменения."
-            ),
-        )
 
     def _classify_with_ai(
         self,
@@ -521,15 +327,10 @@ class RiskAnalyzer:
         allowed_clause_ids = {clause.id for clause in [*before.clauses, *after.clauses]}
         deviations: list[Deviation] = []
         for batch in self._batches(inputs, CLASSIFICATION_BATCH_SIZE):
-            try:
-                response = self.client.parse(
-                    classification_prompt({"change_candidates": batch}),
-                    ChangeClassificationResponse,
-                )
-            except AppError:
-                # One provider failure must not discard already classified,
-                # source-linked drafts from other independent batches.
-                continue
+            response = self.client.parse(
+                classification_prompt({"change_candidates": batch}),
+                ChangeClassificationResponse,
+            )
             allowed_drafts = {str(item["draft_id"]): item for item in batch}
             for finding in response.findings:
                 source = allowed_drafts.get(finding.draft_id)
@@ -543,23 +344,6 @@ class RiskAnalyzer:
                 }
                 returned_refs = {*finding.before_clause_ids, *finding.after_clause_ids}
                 if not returned_refs.issubset(source_refs & allowed_clause_ids):
-                    continue
-                allowed_subjects = {
-                    str(side["id"])
-                    for side in (source.get("before"), source.get("after"))
-                    if side
-                }
-                if not finding.subject_refs or not set(finding.subject_refs).issubset(
-                    allowed_subjects
-                ):
-                    continue
-                if finding.match_id != source.get("match_id"):
-                    continue
-                allowed_change_types = source.get("allowed_change_types")
-                if (
-                    allowed_change_types
-                    and finding.change_type.value not in allowed_change_types
-                ):
                     continue
                 change_type = finding.change_type
                 if change_type in {
@@ -735,16 +519,6 @@ class RiskAnalyzer:
             units.get(second_unit) is not None
             and units[second_unit].parent_unit_id == first_unit
         )
-
-    @staticmethod
-    def _units_equivalent(first: OrgUnit, second: OrgUnit) -> bool:
-        if first.short_name and second.short_name:
-            if (
-                first.short_name.casefold().strip()
-                == second.short_name.casefold().strip()
-            ):
-                return True
-        return ratio(first.name.casefold(), second.name.casefold()) >= 94
 
     @staticmethod
     def _candidate_subject_name(candidate: dict[str, object]) -> str:

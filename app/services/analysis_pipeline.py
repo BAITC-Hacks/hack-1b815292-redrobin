@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from time import monotonic
 
 from app.ai.client import AIClient, ai_client
 from app.ai.prompts import conclusion_prompt
 from app.ai.schemas import ConclusionResponse, EvidenceDecision
+from app.config import get_settings
 from app.errors import AppError
 from app.models.ai import Deviation, EntityCatalog, Match
 from app.models.domain import Job, Report
@@ -15,6 +17,7 @@ from app.services.entity_extractor import EntityExtractor
 from app.services.matcher import Matcher
 from app.services.report_builder import ReportBuilder, report_builder
 from app.services.risk_analyzer import RiskAnalyzer
+from app.services.simple_analyzer import simple_analyzer
 
 ProgressCallback = Callable[[str, float], None]
 
@@ -48,6 +51,29 @@ class AnalysisPipeline:
         job: Job,
         progress: ProgressCallback | None = None,
     ) -> AnalysisRun:
+        report = simple_analyzer.run(job, progress=progress)
+        return AnalysisRun(report=report)
+
+    def run_ai_pipeline(
+        self,
+        job: Job,
+        progress: ProgressCallback | None = None,
+    ) -> AnalysisRun:
+        started = monotonic()
+        timeout = get_settings().analysis_timeout_seconds
+
+        def ensure_time() -> None:
+            if monotonic() - started >= timeout:
+                raise AppError(
+                    503,
+                    "ai_unavailable",
+                    (
+                        "Сервис анализа временно недоступен. "
+                        "Извлеченные пункты сохранены."
+                    ),
+                    retryable=True,
+                )
+
         before = job.parsed_documents.get(job.documents[0].role)
         after = job.parsed_documents.get(job.documents[1].role)
         if before is None or after is None:
@@ -57,11 +83,14 @@ class AnalysisPipeline:
 
         self._progress(progress, "extract_entities_before", 0.50)
         before_entities = self.extractor.extract(before)
+        ensure_time()
         self._progress(progress, "extract_entities_after", 0.61)
         after_entities = self.extractor.extract(after)
+        ensure_time()
 
         self._progress(progress, "semantic_matching", 0.72)
         matches = self.matcher.match(before_entities, after_entities, before, after)
+        ensure_time()
 
         self._progress(progress, "classify_changes", 0.80)
         deviations = self.risks.classify_changes(
@@ -71,8 +100,8 @@ class AnalysisPipeline:
             before,
             after,
         )
-        deviations.extend(self.risks.classify_clause_fallbacks(before, after))
         deviations.extend(self.risks.analyze_risks(after_entities, after))
+        ensure_time()
 
         self._progress(progress, "check_evidence", 0.90)
         decisions = (

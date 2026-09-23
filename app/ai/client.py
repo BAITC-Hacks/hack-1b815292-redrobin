@@ -96,6 +96,8 @@ class AIClient:
                     continue
                 raise self._unavailable() from exc
             except openai.APIStatusError as exc:
+                if self._is_quota_exhausted(exc):
+                    raise self._quota_exhausted() from exc
                 if (
                     exc.status_code in TRANSIENT_STATUS_CODES
                     and transient_attempt < len(RETRY_DELAYS)
@@ -125,7 +127,7 @@ class AIClient:
             if self._sdk_client is None:
                 self._sdk_client = OpenAI(
                     api_key=self.settings.openai_api_key,
-                    timeout=60.0,
+                    timeout=180.0,
                     max_retries=0,
                 )
         return self._sdk_client
@@ -149,6 +151,18 @@ class AIClient:
         )
 
     @staticmethod
+    def _quota_exhausted() -> AppError:
+        return AppError(
+            402,
+            "openai_quota_exhausted",
+            (
+                "На OpenAI API-аккаунте закончились кредиты. "
+                "Пополните billing и запустите анализ заново."
+            ),
+            retryable=False,
+        )
+
+    @staticmethod
     def _invalid_response() -> AppError:
         return AppError(
             502,
@@ -156,6 +170,17 @@ class AIClient:
             "Ответ сервиса анализа не прошел проверку структуры.",
             retryable=True,
         )
+
+    @staticmethod
+    def _is_quota_exhausted(exc: openai.APIStatusError) -> bool:
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            if body.get("code") == "credit_balance_exhausted":
+                return True
+            error = body.get("error")
+            if isinstance(error, dict):
+                return error.get("code") == "credit_balance_exhausted"
+        return False
 
 
 ai_client = AIClient()
