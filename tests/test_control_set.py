@@ -3,7 +3,10 @@
 import json
 from pathlib import Path
 
-from tests.test_parser import AFTER_PATH, BEFORE_PATH
+from app.models.domain import ChangeType, DocumentRole
+from app.services.docx_parser import DocxParser
+from app.services.risk_analyzer import RiskAnalyzer
+from tests.test_parser import AFTER_PATH, BEFORE_PATH, source_document
 
 
 def test_priority_control_set_is_complete_and_grounded() -> None:
@@ -26,3 +29,24 @@ def test_priority_control_set_is_complete_and_grounded() -> None:
         assert item["after_marker"] in after_content
 
     assert "possible_duplicate" in by_id["C-18"]["forbidden_change_types"]
+
+
+def test_generic_clause_fallback_covers_priority_text_changes() -> None:
+    parser = DocxParser()
+    before = parser.parse(source_document(BEFORE_PATH, DocumentRole.BEFORE))
+    after = parser.parse(source_document(AFTER_PATH, DocumentRole.AFTER))
+
+    deviations = RiskAnalyzer().classify_clause_fallbacks(before, after)
+    before_numbers = {clause.id: clause.number for clause in before.clauses}
+    types_by_number: dict[str, set[ChangeType]] = {}
+    for deviation in deviations:
+        for clause_id in deviation.before_clause_ids:
+            number = before_numbers.get(clause_id)
+            if number:
+                types_by_number.setdefault(number, set()).add(deviation.change_type)
+
+    assert types_by_number["9.15"] == {
+        ChangeType.FUNCTION_MISSING,
+        ChangeType.FUNCTION_ADDED,
+    }
+    assert ChangeType.WORDING_CHANGED in types_by_number["1.3"]
