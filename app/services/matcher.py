@@ -25,6 +25,11 @@ from app.models.ai import (
 from app.models.domain import Clause, ParsedDocument
 
 Entity = Union[OrgUnit, Role, Function]
+MAX_SEMANTIC_CALLS = {
+    EntityType.UNIT: 4,
+    EntityType.ROLE: 4,
+    EntityType.FUNCTION: 8,
+}
 
 
 @dataclass(frozen=True)
@@ -121,6 +126,7 @@ class Matcher:
     ) -> list[Match]:
         results: list[Match] = []
         used_after: set[str] = set()
+        semantic_calls = 0
         for before in before_items:
             available = [item for item in after_items if item.id not in used_after]
             exact = [
@@ -150,7 +156,15 @@ class Matcher:
                 continue
             top = candidates[0]
             margin = top.score - (candidates[1].score if len(candidates) > 1 else 0.0)
-            if top.score >= 0.83 and margin >= 0.12:
+            if top.score < 0.60:
+                results.append(self._no_match(entity_type, before))
+                continue
+            if (
+                len(candidates) == 1
+                or margin >= 0.12
+                or candidates[1].score < 0.55
+                or semantic_calls >= MAX_SEMANTIC_CALLS[entity_type]
+            ):
                 used_after.add(top.entity.id)
                 results.append(
                     self._make_match(
@@ -165,6 +179,7 @@ class Matcher:
                 )
                 continue
 
+            semantic_calls += 1
             semantic = self._semantic_match(
                 before,
                 candidates,
