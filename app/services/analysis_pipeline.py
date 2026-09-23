@@ -91,7 +91,6 @@ class AnalysisPipeline:
             before,
             after,
         )
-        deviations.extend(self.risks.classify_clause_fallbacks(before, after))
         deviations.extend(self.risks.analyze_risks(after_entities, after))
         ensure_time()
 

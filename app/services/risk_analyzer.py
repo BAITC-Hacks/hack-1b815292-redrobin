@@ -32,13 +32,11 @@ from app.models.ai import (
 from app.models.domain import ChangeType, ParsedDocument, SemanticRelation, Severity
 
 Entity = Union[OrgUnit, Role, Function]
-CLASSIFICATION_BATCH_SIZE = 30
-EVIDENCE_BATCH_SIZE = 50
+CLASSIFICATION_BATCH_SIZE = 20
+EVIDENCE_BATCH_SIZE = 25
 MAX_RISK_CANDIDATES = 24
-MAX_CLASSIFICATION_CANDIDATES = 30
+MAX_CLASSIFICATION_CANDIDATES = 40
 MAX_UNMATCHED_ABSTENTIONS = 20
-MAX_CLAUSE_FALLBACKS = 20
-MODAL_MARKERS = {"может", "обязан", "должен", "вправе", "осуществляется"}
 
 
 class RiskAnalyzer:
@@ -66,10 +64,7 @@ class RiskAnalyzer:
             before = before_entities[match.before_id]
             after = after_entities.get(match.after_id or "")
             if match.entity_type == EntityType.UNIT:
-                if after is not None and (
-                    match.relation == MatchRelation.EQUIVALENT
-                    or self._units_equivalent(before, after)
-                ):
+                if after is not None and match.relation == MatchRelation.EQUIVALENT:
                     deviations.append(
                         self._draft(
                             before.document_id,
@@ -208,91 +203,6 @@ class RiskAnalyzer:
             )
         )
         return self._deduplicate(deviations)
-
-    def classify_clause_fallbacks(
-        self,
-        before: ParsedDocument,
-        after: ParsedDocument,
-    ) -> list[Deviation]:
-        """Protect modal and editorial same-number changes from entity omissions."""
-
-        before_by_number = {
-            clause.number: clause for clause in before.clauses if clause.number
-        }
-        after_by_number = {
-            clause.number: clause for clause in after.clauses if clause.number
-        }
-        candidates: list[tuple[float, object, object]] = []
-        for number in before_by_number.keys() & after_by_number.keys():
-            old = before_by_number[number]
-            new = after_by_number[number]
-            if old.normalized_text == new.normalized_text:
-                continue
-            similarity = ratio(old.normalized_text, new.normalized_text) / 100.0
-            if similarity >= 0.88:
-                candidates.append((similarity, old, new))
-
-        deviations: list[Deviation] = []
-        ordered = sorted(candidates, key=lambda item: item[0], reverse=True)
-        for similarity, old, new in ordered[:MAX_CLAUSE_FALLBACKS]:
-            old_tokens = set(old.normalized_text.split())
-            new_tokens = set(new.normalized_text.split())
-            modal_change = bool((old_tokens ^ new_tokens) & MODAL_MARKERS)
-            subject = f"пункт {old.number}"
-            if modal_change:
-                for change_type, description in (
-                    (
-                        ChangeType.FUNCTION_MISSING,
-                        "Часть прежней обязательности не найдена",
-                    ),
-                    (
-                        ChangeType.FUNCTION_ADDED,
-                        "Добавлена новая модальная формулировка",
-                    ),
-                ):
-                    deviations.append(
-                        Deviation(
-                            id=self._draft_id(
-                                before.document.id,
-                                f"modal:{change_type.value}:{old.id}:{new.id}",
-                            ),
-                            change_type=change_type,
-                            semantic_relation=SemanticRelation.NARROWER,
-                            subject_refs=[f"clause:{old.number}"],
-                            before_clause_ids=[old.id],
-                            after_clause_ids=[new.id],
-                            description=f"{description}: {subject}",
-                            severity=Severity.MEDIUM,
-                            confidence=similarity,
-                            rationale=(
-                                "В сопоставленном пункте изменено модальное слово; "
-                                "вывод относится только к обязательности действия."
-                            ),
-                            manual_review_required=True,
-                        )
-                    )
-            else:
-                deviations.append(
-                    Deviation(
-                        id=self._draft_id(
-                            before.document.id, f"wording:{old.id}:{new.id}"
-                        ),
-                        change_type=ChangeType.WORDING_CHANGED,
-                        semantic_relation=SemanticRelation.EQUIVALENT,
-                        subject_refs=[f"clause:{old.number}"],
-                        before_clause_ids=[old.id],
-                        after_clause_ids=[new.id],
-                        description=f"Формулировка изменена: {subject}",
-                        severity=Severity.INFO,
-                        confidence=similarity,
-                        rationale=(
-                            "Пункты имеют одинаковый номер и высокое текстовое "
-                            "сходство без изменения модальных маркеров."
-                        ),
-                        manual_review_required=False,
-                    )
-                )
-        return deviations
 
     def analyze_risks(
         self,
@@ -678,16 +588,6 @@ class RiskAnalyzer:
             units.get(second_unit) is not None
             and units[second_unit].parent_unit_id == first_unit
         )
-
-    @staticmethod
-    def _units_equivalent(first: OrgUnit, second: OrgUnit) -> bool:
-        if first.short_name and second.short_name:
-            if (
-                first.short_name.casefold().strip()
-                == second.short_name.casefold().strip()
-            ):
-                return True
-        return ratio(first.name.casefold(), second.name.casefold()) >= 94
 
     @staticmethod
     def _candidate_subject_name(candidate: dict[str, object]) -> str:

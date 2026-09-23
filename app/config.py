@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     analysis_timeout_seconds: int = Field(
         default=300, gt=0, alias="ANALYSIS_TIMEOUT_SECONDS"
     )
-    ai_parallelism: int = Field(default=6, ge=1, le=8, alias="AI_PARALLELISM")
+    ai_parallelism: int = Field(default=4, ge=1, le=8, alias="AI_PARALLELISM")
     temp_root: Path = Field(default=Path(gettempdir()) / "redrobin", alias="TEMP_ROOT")
 
 
