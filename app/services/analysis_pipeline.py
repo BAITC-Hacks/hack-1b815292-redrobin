@@ -17,6 +17,7 @@ from app.services.entity_extractor import EntityExtractor
 from app.services.matcher import Matcher
 from app.services.report_builder import ReportBuilder, report_builder
 from app.services.risk_analyzer import RiskAnalyzer
+from app.services.simple_analyzer import simple_analyzer
 
 ProgressCallback = Callable[[str, float], None]
 
@@ -46,6 +47,14 @@ class AnalysisPipeline:
         self.builder = builder or report_builder
 
     def run(
+        self,
+        job: Job,
+        progress: ProgressCallback | None = None,
+    ) -> AnalysisRun:
+        report = simple_analyzer.run(job, progress=progress)
+        return AnalysisRun(report=report)
+
+    def run_ai_pipeline(
         self,
         job: Job,
         progress: ProgressCallback | None = None,

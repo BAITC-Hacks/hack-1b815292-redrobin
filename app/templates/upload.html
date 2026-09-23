@@ -1,54 +1,19 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>RedRobin · Сравнение редакций</title>
+  <title>RedRobin · Анализ оргструктуры</title>
   <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
 </head>
 <body>
-  <main class="shell upload-shell">
-    <header class="hero">
-      <a class="brand" href="/" aria-label="RedRobin">Red<span>Robin</span></a>
-      <p class="eyebrow">Анализ организационной структуры</p>
-      <h1>Что изменилось между редакциями?</h1>
-      <p class="lead">Загрузите два DOCX. Система сопоставит подразделения и функции, а каждый вывод свяжет с точным пунктом.</p>
-    </header>
-
-    <aside class="privacy-note" role="note">
-      <strong>Только обезличенные документы.</strong>
-      Не загружайте персональные данные, коммерческие тайны или ключи доступа. Временные файлы удаляются по истечении срока задания.
-    </aside>
-
-    <form id="upload-form" class="upload-form" novalidate>
-      <div class="file-grid">
-        <label class="file-card" for="before-file">
-          <span class="file-step">01</span>
-          <span class="file-role">Редакция до</span>
-          <span class="file-help">Исходная версия документа</span>
-          <input id="before-file" name="before_file" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" required>
-          <span class="file-action">Выбрать DOCX</span>
-          <span class="file-meta" data-file-meta="before_file">Файл не выбран</span>
-          <span class="field-error" data-error-for="before_file" aria-live="polite"></span>
-        </label>
-
-        <button class="swap-button" id="swap-files" type="button" aria-label="Поменять редакции местами">⇄</button>
-
-        <label class="file-card" for="after-file">
-          <span class="file-step">02</span>
-          <span class="file-role">Редакция после</span>
-          <span class="file-help">Новая версия документа</span>
-          <input id="after-file" name="after_file" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" required>
-          <span class="file-action">Выбрать DOCX</span>
-          <span class="file-meta" data-file-meta="after_file">Файл не выбран</span>
-          <span class="field-error" data-error-for="after_file" aria-live="polite"></span>
-        </label>
-      </div>
-
-      <div class="form-error" id="form-error" role="alert" aria-live="assertive"></div>
-      <button class="primary-button" id="start-analysis" type="submit">Запустить анализ <span>→</span></button>
-    </form>
-  </main>
+  <div id="root"></div>
+  <section class="server-fallback" aria-hidden="true">
+    <p>Только обезличенные документы</p>
+    <label>Редакция до <input id="before-file" name="before_file" type="file"></label>
+    <button id="swap-files" type="button">Поменять редакции местами</button>
+    <label>Редакция после <input id="after-file" name="after_file" type="file"></label>
+  </section>
   <script src="{{ url_for('static', path='/app.js') }}" defer></script>
 </body>
 </html>

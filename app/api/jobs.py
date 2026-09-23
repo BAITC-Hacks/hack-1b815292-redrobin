@@ -15,7 +15,7 @@ from app.models.api import (
     JobStatusResponse,
     UploadedDocumentSummary,
 )
-from app.models.domain import DocumentRole, Job, JobStatus, Report
+from app.models.domain import DocumentRole, Job, JobStatus, ParsedDocument, Report
 from app.services.analysis_pipeline import analysis_pipeline
 from app.services.docx_parser import docx_parser
 from app.services.job_service import job_service
@@ -134,6 +134,27 @@ def get_job_result(job_id: UUID) -> Report:
             },
         )
     return job.report
+
+
+@router.get("/{job_id}/documents/{role}", response_model=ParsedDocument)
+def get_parsed_document(job_id: UUID, role: DocumentRole) -> ParsedDocument:
+    job = job_service.get_job(job_id)
+    parsed = job.parsed_documents.get(role)
+    if parsed is not None:
+        return parsed
+
+    document = next((item for item in job.documents if item.role == role), None)
+    if document is None:
+        raise AppError(
+            404,
+            "document_not_found",
+            "Документ с указанной ролью не найден.",
+        )
+
+    parsed = docx_parser.parse(document)
+    job.parsed_documents[role] = parsed
+    job_service.write_artifact(job, f"parsed-{role.value}.json", parsed)
+    return parsed
 
 
 def _run_analysis(job_id: UUID) -> None:

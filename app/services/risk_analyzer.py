@@ -35,8 +35,6 @@ Entity = Union[OrgUnit, Role, Function]
 CLASSIFICATION_BATCH_SIZE = 20
 EVIDENCE_BATCH_SIZE = 25
 MAX_RISK_CANDIDATES = 24
-MAX_CLASSIFICATION_CANDIDATES = 40
-MAX_UNMATCHED_ABSTENTIONS = 20
 
 
 class RiskAnalyzer:
@@ -56,9 +54,8 @@ class RiskAnalyzer:
         before_entities = self._entity_index(before_catalog)
         after_entities = self._entity_index(after_catalog)
         deviations: list[Deviation] = []
-        ai_candidates: list[tuple[float, dict[str, object]]] = []
+        ai_inputs: list[dict[str, object]] = []
         matched_after = {match.after_id for match in matches if match.after_id}
-        unmatched_abstentions = 0
 
         for match in matches:
             before = before_entities[match.before_id]
@@ -82,29 +79,18 @@ class RiskAnalyzer:
                         )
                     )
                 elif after is None:
-                    if unmatched_abstentions < MAX_UNMATCHED_ABSTENTIONS:
-                        deviations.append(
-                            self._insufficient_for_unmatched(before, match)
-                        )
-                        unmatched_abstentions += 1
+                    deviations.append(self._insufficient_for_unmatched(before, match))
                 else:
-                    ai_candidates.append(
-                        (
-                            100.0 + match.score,
-                            self._classification_input(
-                                match, before, after, before_document, after_document
-                            ),
+                    ai_inputs.append(
+                        self._classification_input(
+                            match, before, after, before_document, after_document
                         )
                     )
                 continue
 
             if match.entity_type == EntityType.FUNCTION:
                 if after is None:
-                    if unmatched_abstentions < MAX_UNMATCHED_ABSTENTIONS:
-                        deviations.append(
-                            self._insufficient_for_unmatched(before, match)
-                        )
-                        unmatched_abstentions += 1
+                    deviations.append(self._insufficient_for_unmatched(before, match))
                 elif match.relation == MatchRelation.EQUIVALENT:
                     if self._numbers(before, before_document) != self._numbers(
                         after, after_document
@@ -126,73 +112,35 @@ class RiskAnalyzer:
                             )
                         )
                 else:
-                    same_number = bool(
-                        self._numbers(before, before_document)
-                        & self._numbers(after, after_document)
-                    )
-                    ai_candidates.append(
-                        (
-                            (80.0 if same_number else 60.0) + match.score,
-                            self._classification_input(
-                                match, before, after, before_document, after_document
-                            ),
+                    ai_inputs.append(
+                        self._classification_input(
+                            match, before, after, before_document, after_document
                         )
                     )
                 continue
 
-            if after is None and unmatched_abstentions < MAX_UNMATCHED_ABSTENTIONS:
+            if after is None:
                 deviations.append(self._insufficient_for_unmatched(before, match))
-                unmatched_abstentions += 1
 
         for after in [*after_catalog.units, *after_catalog.functions]:
             if after.id in matched_after:
                 continue
             draft_id = self._draft_id(after.document_id, "added:" + after.id)
-            if isinstance(after, OrgUnit):
-                deviations.append(
-                    Deviation(
-                        id=draft_id,
-                        change_type=ChangeType.UNIT_CREATED,
-                        semantic_relation=SemanticRelation.NOT_APPLICABLE,
-                        subject_refs=[after.id],
-                        before_clause_ids=[],
-                        after_clause_ids=after.source_clause_ids,
-                        description=self._description(
-                            ChangeType.UNIT_CREATED, after.name
-                        ),
-                        severity=Severity.MEDIUM,
-                        confidence=after.extraction_confidence,
-                        rationale=(
-                            "Подразделение извлечено из новой редакции и не имеет "
-                            "сопоставленного подразделения в прежней редакции."
-                        ),
-                        manual_review_required=False,
-                    )
-                )
-                continue
-            ai_candidates.append(
-                (
-                    20.0 + after.extraction_confidence,
-                    {
-                        "draft_id": draft_id,
-                        "match_id": None,
-                        "kind": "unmatched_after",
-                        "before": None,
-                        "after": self._entity_payload(after, after_document),
-                        "allowed_change_types": [
-                            ChangeType.FUNCTION_ADDED.value,
-                            ChangeType.INSUFFICIENT_EVIDENCE.value,
-                        ],
-                    },
-                )
+            ai_inputs.append(
+                {
+                    "draft_id": draft_id,
+                    "match_id": None,
+                    "kind": "unmatched_after",
+                    "before": None,
+                    "after": self._entity_payload(after, after_document),
+                    "allowed_change_types": [
+                        ChangeType.UNIT_CREATED.value
+                        if isinstance(after, OrgUnit)
+                        else ChangeType.FUNCTION_ADDED.value,
+                        ChangeType.INSUFFICIENT_EVIDENCE.value,
+                    ],
+                }
             )
-
-        ai_inputs = [
-            payload
-            for _, payload in sorted(
-                ai_candidates, key=lambda item: item[0], reverse=True
-            )[:MAX_CLASSIFICATION_CANDIDATES]
-        ]
 
         deviations.extend(
             self._classify_with_ai(
@@ -396,23 +344,6 @@ class RiskAnalyzer:
                 }
                 returned_refs = {*finding.before_clause_ids, *finding.after_clause_ids}
                 if not returned_refs.issubset(source_refs & allowed_clause_ids):
-                    continue
-                allowed_subjects = {
-                    str(side["id"])
-                    for side in (source.get("before"), source.get("after"))
-                    if side
-                }
-                if not finding.subject_refs or not set(finding.subject_refs).issubset(
-                    allowed_subjects
-                ):
-                    continue
-                if finding.match_id != source.get("match_id"):
-                    continue
-                allowed_change_types = source.get("allowed_change_types")
-                if (
-                    allowed_change_types
-                    and finding.change_type.value not in allowed_change_types
-                ):
                     continue
                 change_type = finding.change_type
                 if change_type in {
