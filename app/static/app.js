@@ -9,7 +9,7 @@ const categories = [
     id: "new-units",
     title: "2. Какие появились после реорганизации",
     helper: "Новые или выделенные подразделения из редакции после.",
-    types: ["unit_created"],
+    types: ["unit_created", "function_added"],
   },
   {
     id: "kept-functions",
