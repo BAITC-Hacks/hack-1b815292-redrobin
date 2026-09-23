@@ -1,0 +1,1 @@
+"""RedRobin application package."""

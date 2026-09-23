@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RedRobin · Результат</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
+</head>
+<body>
+  <main class="shell result-shell" data-result-page>
+    <nav class="topbar">
+      <a class="brand" href="/">Red<span>Robin</span></a>
+      <a class="secondary-link" href="/">Новый анализ</a>
+    </nav>
+
+    <header class="result-hero">
+      <p class="eyebrow">Проверенный отчёт</p>
+      <h1>{{ report.summary }}</h1>
+      <p class="lead">{{ report.conclusion }}</p>
+    </header>
+
+    {% if report.warnings %}
+    <section class="warnings" aria-label="Предупреждения">
+      {% for warning in report.warnings %}<p>⚠ {{ warning }}</p>{% endfor %}
+    </section>
+    {% endif %}
+
+    <section class="metrics" aria-label="Счётчики изменений">
+      <article><strong>{{ report.findings|length }}</strong><span>опубликовано</span></article>
+      {% for change_type, count in counts.items() %}
+      <article><strong>{{ count }}</strong><span>{{ change_type }}</span></article>
+      {% endfor %}
+      <article><strong>{{ report.rejected_deviation_count }}</strong><span>отброшено</span></article>
+    </section>
+
+    <section class="filters" aria-label="Фильтры отчёта">
+      <label>Тип изменения
+        <select id="change-filter">
+          <option value="">Все типы</option>
+          {% for value in change_types %}<option value="{{ value }}">{{ value }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Значимость
+        <select id="severity-filter">
+          <option value="">Любая</option>
+          {% for value in severities %}<option value="{{ value }}">{{ value }}</option>{% endfor %}
+        </select>
+      </label>
+      <span id="visible-count">Показано: {{ report.findings|length }}</span>
+    </section>
+
+    <section class="finding-list" id="finding-list">
+      {% for finding in report.findings %}
+      <article class="finding-card" data-change-type="{{ finding.change_type.value }}" data-severity="{{ finding.severity.value }}">
+        <header>
+          <div class="badge-row">
+            <span class="badge {{ finding.severity.value }}">{{ finding.severity.value }}</span>
+            <span class="badge outline">{{ finding.change_type.value }}</span>
+            {% if finding.manual_review_status.value == 'pending' %}<span class="badge review">Требуется ручная проверка</span>{% endif %}
+          </div>
+          <h2>{{ finding.description }}</h2>
+          <p>{{ finding.subject.name }}</p>
+        </header>
+
+        <div class="evidence-grid">
+          <section>
+            <h3>Редакция до</h3>
+            {% for evidence in finding.before_evidence %}
+              {% if evidence.evidence_type.value == 'presence' %}
+              <div class="evidence">
+                <span>{{ evidence.document_name }} · пункт {{ evidence.clause_number or 'без номера' }}</span>
+                <blockquote>{{ evidence.quote }}</blockquote>
+              </div>
+              {% else %}
+              <div class="evidence absence">Поиск «{{ evidence.search_query }}»: кандидатов {{ evidence.candidate_count }}</div>
+              {% endif %}
+            {% else %}<p class="empty-evidence">Источник не указан</p>{% endfor %}
+          </section>
+          <section>
+            <h3>Редакция после</h3>
+            {% for evidence in finding.after_evidence %}
+            <div class="evidence">
+              <span>{{ evidence.document_name }} · пункт {{ evidence.clause_number or 'без номера' }}</span>
+              <blockquote>{{ evidence.quote }}</blockquote>
+            </div>
+            {% else %}<p class="empty-evidence">Источник не указан</p>{% endfor %}
+          </section>
+        </div>
+
+        <footer class="finding-footer">
+          <div><span>Обоснование</span><p>{{ finding.rationale }}</p></div>
+          <dl>
+            <div><dt>Уверенность</dt><dd>{{ '%.0f'|format(finding.confidence * 100) }}%</dd></div>
+            <div><dt>Ручная проверка</dt><dd>{{ finding.manual_review_status.value }}</dd></div>
+            <div><dt>Проверка источника</dt><dd>{{ finding.validation_status.value }}</dd></div>
+          </dl>
+        </footer>
+      </article>
+      {% else %}
+      <div class="empty-report">Проверенных выводов для отображения нет.</div>
+      {% endfor %}
+    </section>
+  </main>
+  <script src="{{ url_for('static', path='/app.js') }}" defer></script>
+</body>
+</html>

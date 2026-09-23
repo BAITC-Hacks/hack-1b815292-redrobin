@@ -377,7 +377,7 @@ README.md
 Document
   id: UUID
   role: before | after
-  original_name: string
+  original_name: stringнуж
   safe_path: string
   sha256: string
   size_bytes: integer
